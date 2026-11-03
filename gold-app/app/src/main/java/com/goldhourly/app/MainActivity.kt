@@ -227,7 +227,7 @@ class MainActivity : Activity() {
             tvPrice.text = "--"
             tvSub.text = ""
             tvChange.text = ""
-            tvUpdate.text = if (lastErr) "网络异常，稍后自动重试" else "读取中…"
+            tvUpdate.text = if (lastErr) "网络异常：" + GoldApi.lastError.ifBlank { "未知错误" }.take(90) else "读取中…"
             return
         }
 
