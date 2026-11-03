@@ -1,0 +1,62 @@
+name: build-apk
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Locate Gradle project
+        id: locate
+        run: |
+          DIR="."
+          if [ ! -f settings.gradle.kts ]; then
+            FOUND=$(find . -maxdepth 3 -name settings.gradle.kts -not -path '*/build/*' | head -n 1)
+            if [ -z "$FOUND" ]; then
+              echo "::error::仓库里找不到 settings.gradle.kts，文件可能没有上传完整"
+              find . -maxdepth 3 -type f | head -n 60
+              exit 1
+            fi
+            DIR=$(dirname "$FOUND")
+          fi
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+          echo "工程目录: $DIR"
+          ls -la "$DIR"
+
+      - name: Show toolchain
+        run: |
+          java -version
+          gradle --version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+
+      - name: Ensure Android SDK 34
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          if [ -x "$SDKM" ]; then
+            yes | "$SDKM" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          fi
+          ls "$ANDROID_HOME/platforms" 2>/dev/null || true
+
+      - name: Build debug APK
+        run: gradle -p "${{ steps.locate.outputs.dir }}" :app:assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gold-hourly-apk
+          path: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
