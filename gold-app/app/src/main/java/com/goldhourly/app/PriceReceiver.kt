@@ -59,6 +59,7 @@ object Sync {
         val hist = GoldApi.hourlyHistory()
         if (hist.isEmpty()) {
             PriceStore.setFilled(c, 0)
+            PriceStore.setFillMsg(c, GoldApi.lastError.ifBlank { "hist 不可用" })
             return 0
         }
         val nowHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
@@ -69,6 +70,7 @@ object Sync {
             if (PriceStore.addIfMissing(c, h, v, ts)) n++
         }
         PriceStore.setFilled(c, n)
+        if (n > 0) PriceStore.setFillMsg(c, "")
         return n
     }
 }

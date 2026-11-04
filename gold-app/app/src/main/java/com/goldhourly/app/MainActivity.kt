@@ -33,6 +33,10 @@ class MainActivity : Activity() {
         private val UP = Color.parseColor("#F2B53C")
         private val DOWN = Color.parseColor("#3FBF7F")
         private val CARD = Color.parseColor("#1A2029")
+
+        /** 前台自动刷新间隔（毫秒）：进入页面/停留时按此节流取价 */
+        private const val MIN_GAP = 15_000L
+        private const val TICK_MS = 30_000L
     }
 
     private lateinit var tvPrice: TextView
@@ -50,11 +54,12 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     private var busy = false
     private var lastErr = false
+    private var lastFetch = 0L
 
     private val tick = object : Runnable {
         override fun run() {
-            if (!hasPointForNow()) refresh()
-            handler.postDelayed(this, 60_000)
+            refresh()
+            handler.postDelayed(this, TICK_MS)
         }
     }
 
@@ -79,12 +84,13 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()
-        if (!hasPointForNow() || (needsFill() && PriceStore.fillDue(this))) refresh()
+        refresh()
     }
 
     override fun onStart() {
         super.onStart()
-        handler.postDelayed(tick, 60_000)
+        handler.removeCallbacks(tick)
+        handler.postDelayed(tick, TICK_MS)
     }
 
     override fun onStop() {
@@ -190,11 +196,6 @@ class MainActivity : Activity() {
 
     // ---------- 数据 ----------
 
-    private fun hasPointForNow(): Boolean {
-        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        return PriceStore.hours(this).any { it.first == hour }
-    }
-
     /** 今天是否缺了当前时刻之前的整点 */
     private fun needsFill(): Boolean {
         val nowHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
@@ -203,8 +204,11 @@ class MainActivity : Activity() {
         return false
     }
 
-    private fun refresh() {
+    private fun refresh(force: Boolean = false) {
         if (busy) return
+        val now = System.currentTimeMillis()
+        if (!force && now - lastFetch < MIN_GAP) return
+        lastFetch = now
         busy = true
         val fill = needsFill() && PriceStore.fillDue(this)
         Thread {
@@ -232,11 +236,20 @@ class MainActivity : Activity() {
         chart.setPoints(points)
 
         val threshold = PriceStore.threshold(this)
-        tvState.text = if (threshold > 0.0) {
-            String.format(Locale.US, "底价 %.1f 元/克 · 每小时后台检查", threshold)
-        } else {
-            "未设置底价（不会提醒）"
+        val nowCny = points.lastOrNull()?.second ?: 0.0
+        tvState.text = when {
+            threshold <= 0.0 -> "未设置底价（不会提醒）"
+            nowCny <= 0.0 -> String.format(Locale.US, "底价 %.1f 元/克 · 每小时后台检查", threshold)
+            nowCny <= threshold -> String.format(
+                Locale.US, "底价 %.1f · 现价 %.1f · 已低于底价 %.1f，会提醒",
+                threshold, nowCny, threshold - nowCny
+            )
+            else -> String.format(
+                Locale.US, "底价 %.1f · 现价 %.1f · 高于底价 %.1f",
+                threshold, nowCny, nowCny - threshold
+            )
         }
+        tvState.setTextColor(if (threshold > 0.0 && nowCny > 0.0 && nowCny <= threshold) DOWN else DIM)
         btnBattery.text = when {
             !HourlyAlarm.ignoringBattery(this) -> "允许后台"
             !HourlyAlarm.canExact(this) -> "允许精确闹钟"
@@ -264,6 +277,8 @@ class MainActivity : Activity() {
         }
         val add = PriceStore.filled(this)
         if (add > 0) bg.append(" · 补 ").append(add).append(" 点")
+        val fm = PriceStore.fillMsg(this)
+        if (fm.isNotBlank()) bg.append(" · 补点失败（").append(fm.take(46)).append("）")
         if (!HourlyAlarm.canExact(this)) bg.append(" · 精确闹钟未开")
         tvBg.text = bg.toString()
 
@@ -326,7 +341,7 @@ class MainActivity : Activity() {
             ?.hideSoftInputFromWindow(et.windowToken, 0)
         render()
         toast("已保存：不高于 " + String.format(Locale.US, "%.1f", v) + " 元/克时提醒")
-        if (!hasPointForNow()) refresh()
+        refresh(true)
     }
 
     private fun askBattery() {

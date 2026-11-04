@@ -20,6 +20,7 @@ object PriceStore {
     private const val K_MSG = "last_msg"
     private const val K_FILL = "filled"
     private const val K_FILL_TS = "fill_ts"
+    private const val K_FILL_MSG = "fill_msg"
 
     private fun sp(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -121,7 +122,14 @@ object PriceStore {
         sp(c).edit().putInt(K_FILL, n).putLong(K_FILL_TS, System.currentTimeMillis()).apply()
     }
 
-    /** 补点限流：20 分钟内不重复请求 */
+    /** 补点限流：5 分钟内不重复请求 */
     fun fillDue(c: Context): Boolean =
-        System.currentTimeMillis() - sp(c).getLong(K_FILL_TS, 0L) > 20 * 60_000L
+        System.currentTimeMillis() - sp(c).getLong(K_FILL_TS, 0L) > 5 * 60_000L
+
+    /** 补点失败原因，补上时清空 */
+    fun setFillMsg(c: Context, s: String) {
+        sp(c).edit().putString(K_FILL_MSG, s.take(120)).apply()
+    }
+
+    fun fillMsg(c: Context): String = sp(c).getString(K_FILL_MSG, "") ?: ""
 }
