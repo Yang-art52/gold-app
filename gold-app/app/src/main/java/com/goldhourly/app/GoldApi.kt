@@ -123,111 +123,56 @@ object GoldApi {
 
     /**
      * 今日逐小时收盘价（美元/盎司），用于补齐 App 未运行时的整点。
-     * 源：新浪外盘期货分时K线（中国境内可访问）。失败返回空表，原因写 lastError。
+     * 源：东方财富 现货黄金（secid=122.XAU）60 分钟 / 5 分钟 K 线，境内直连。
+     * 失败返回空表，原因写 lastError。
      */
     fun hourlyHistory(): Map<Int, Double> {
         val errs = ArrayList<String>()
-
-        // 1) 新浪外盘期货分时K线（伦敦金 XAU / COMEX 金 GC）
-        for (sym in listOf("XAU", "GC")) {
-            for (period in listOf("60m", "5m")) {
-                val u = "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/" +
-                    "GlobalFuturesService.getGlobalFuturesMiniKLine" + period + "?symbol=" + sym
-                val body = get(u, "https://finance.sina.com.cn")
-                if (body.isNullOrBlank()) {
-                    errs.add("sina" + period + " " + lastError)
-                    continue
-                }
-                val m = parseSina(body)
-                if (m.isNotEmpty()) {
-                    lastError = ""
-                    return m
-                }
-                errs.add("sina" + period + " 无今日点")
-            }
-        }
-
-        // 2) 腾讯外盘期货 60 分钟 K 线
-        for (sym in listOf("hf_XAU", "hf_GC")) {
-            val u = "https://web.ifzq.gtimg.cn/appstock/app/kline/mkline?param=" + sym + ",m60,,48"
-            val body = get(u, "https://gu.qq.com")
+        for (klt in intArrayOf(60, 5)) {
+            val u = "https://push2his.eastmoney.com/api/qt/stock/kline/get" +
+                "?secid=122.XAU&ut=fa5fd1943c7b386f172d6893dbfba10b&klt=" + klt +
+                "&fqt=1&lmt=" + (if (klt == 60) 48 else 240) + "&end=20500101" +
+                "&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56"
+            val body = get(u, "https://quote.eastmoney.com")
             if (body.isNullOrBlank()) {
-                errs.add("tx " + lastError)
+                errs.add("em" + klt + " " + lastError)
                 continue
             }
-            val m = parseTencent(body)
+            if (!body.contains("klines")) {
+                errs.add("em" + klt + " 无klines")
+                continue
+            }
+            val m = parseEm(body)
             if (m.isNotEmpty()) {
                 lastError = ""
                 return m
             }
-            errs.add("tx 无今日点")
+            errs.add("em" + klt + " 无今日点")
         }
-
         lastError = if (errs.isEmpty()) "hist 不可用" else errs.joinToString(" | ").take(140)
         return emptyMap()
     }
 
-    /** 新浪 JSONP：var t=([{"d":"2026-11-04 13:00:00","c":"3960.86",...}]) */
-    private fun parseSina(body: String): Map<Int, Double> {
-        val a = body.indexOf('[')
-        val b = body.lastIndexOf(']')
-        if (a < 0 || b <= a) return emptyMap()
+    /** 东财：{"data":{"klines":["2026-11-04 13:00,开,收,高,低,量", ...]}} */
+    private fun parseEm(body: String): Map<Int, Double> {
         val arr = try {
-            JSONArray(body.substring(a, b + 1))
+            JSONObject(body).optJSONObject("data")?.optJSONArray("klines")
         } catch (_: Exception) {
-            return emptyMap()
-        }
-        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+            null
+        } ?: return emptyMap()
+        val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US)
         val bars = ArrayList<Pair<Long, Double>>()
         for (i in 0 until arr.length()) {
-            val o = arr.optJSONObject(i) ?: continue
-            val d = o.optString("d", "")
-            if (d.length < 19) continue
+            val parts = arr.optString(i, "").split(",")
+            if (parts.size < 3) continue
             val t = try {
-                fmt.parse(d)?.time ?: 0L
+                fmt.parse(parts[0])?.time ?: 0L
             } catch (_: Exception) {
                 0L
             }
             if (t <= 0L) continue
-            val c = o.optString("c", "").toDoubleOrNull() ?: o.optDouble("c", 0.0)
+            val c = parts[2].toDoubleOrNull() ?: continue
             if (c > 100.0) bars.add(t to c)
-        }
-        return toHourMap(bars)
-    }
-
-    /** 腾讯：{"data":{"hf_XAU":{"m60":[["202611041300","开","收","高","低",...]]}}} */
-    private fun parseTencent(body: String): Map<Int, Double> {
-        val root = try {
-            JSONObject(body)
-        } catch (_: Exception) {
-            return emptyMap()
-        }
-        val data = root.optJSONObject("data") ?: return emptyMap()
-        val f12 = SimpleDateFormat("yyyyMMddHHmm", Locale.US)
-        val bars = ArrayList<Pair<Long, Double>>()
-        val nk = data.keys()
-        while (nk.hasNext()) {
-            val node = data.optJSONObject(nk.next()) ?: continue
-            val ik = node.keys()
-            while (ik.hasNext()) {
-                val name = ik.next()
-                if (!name.startsWith("m")) continue
-                val arr = node.optJSONArray(name) ?: continue
-                for (i in 0 until arr.length()) {
-                    val it = arr.optJSONArray(i) ?: continue
-                    if (it.length() < 3) continue
-                    val s = it.optString(0, "")
-                    if (s.length != 12) continue
-                    val v = it.optString(2, "").toDoubleOrNull() ?: continue
-                    if (v <= 100.0) continue
-                    val t = try {
-                        f12.parse(s)?.time ?: 0L
-                    } catch (_: Exception) {
-                        0L
-                    }
-                    if (t > 0L) bars.add(t to v)
-                }
-            }
         }
         return toHourMap(bars)
     }

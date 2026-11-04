@@ -83,6 +83,9 @@ class MonitorService : Service() {
         private const val CH = "gold_service"
         private const val NID = 2001
 
+        @Volatile
+        private var inst: MonitorService? = null
+
         fun start(c: Context) {
             try {
                 val i = Intent(c, MonitorService::class.java)
@@ -92,6 +95,19 @@ class MonitorService : Service() {
                     c.startService(i)
                 }
             } catch (_: Exception) {
+            }
+        }
+
+        /** 外部（界面）改了底价或刷新了价格后，立刻同步常驻通知的文字 */
+        fun refresh(c: Context) {
+            val s = inst
+            if (s != null) {
+                try {
+                    s.push()
+                } catch (_: Exception) {
+                }
+            } else {
+                start(c)
             }
         }
     }
@@ -115,19 +131,29 @@ class MonitorService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        inst = this
         try {
             startForeground(NID, build())
         } catch (_: Exception) {
         }
+        lastText = summary()
         handler.postDelayed(loop, 2_000L)
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int = START_STICKY
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        inst = this
+        try {
+            push()
+        } catch (_: Exception) {
+        }
+        return START_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
         handler.removeCallbacks(loop)
+        inst = null
         super.onDestroy()
     }
 

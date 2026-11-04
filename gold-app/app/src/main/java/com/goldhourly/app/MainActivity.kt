@@ -222,6 +222,7 @@ class MainActivity : Activity() {
                 busy = false
                 lastErr = !ok
                 render()
+                MonitorService.refresh(this)
                 if (fill && added > 0) toast("已补齐 " + added + " 个整点")
             }
         }.start()
@@ -340,6 +341,7 @@ class MainActivity : Activity() {
         (getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as? InputMethodManager)
             ?.hideSoftInputFromWindow(et.windowToken, 0)
         render()
+        MonitorService.refresh(this)
         toast("已保存：不高于 " + String.format(Locale.US, "%.1f", v) + " 元/克时提醒")
         refresh(true)
     }
