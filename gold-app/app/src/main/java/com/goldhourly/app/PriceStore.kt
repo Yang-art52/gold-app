@@ -15,6 +15,11 @@ object PriceStore {
     private const val K_FX_TS = "fx_ts"
     private const val K_TH = "threshold"
     private const val K_ARMED = "armed"
+    private const val K_CHECK = "last_check"
+    private const val K_OK = "last_ok"
+    private const val K_MSG = "last_msg"
+    private const val K_FILL = "filled"
+    private const val K_FILL_TS = "fill_ts"
 
     private fun sp(c: Context) = c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
@@ -82,4 +87,41 @@ object PriceStore {
         sp(c).edit().putFloat(K_FX, v.toFloat())
             .putLong(K_FX_TS, System.currentTimeMillis()).apply()
     }
+
+    /** 补点：该小时已有值则跳过，返回是否真的写入 */
+    fun addIfMissing(c: Context, hour: Int, usd: Double, ts: Long): Boolean {
+        val o = raw(c)
+        val v = o.getJSONObject("v")
+        if (v.has(hour.toString())) return false
+        v.put(hour.toString(), usd)
+        o.getJSONObject("t").put(hour.toString(), ts)
+        sp(c).edit().putString(K_POINTS, o.toString()).apply()
+        return true
+    }
+
+    /** 记录最近一次后台/手动检查的结果，界面显示用 */
+    fun markCheck(c: Context, ok: Boolean, msg: String) {
+        sp(c).edit()
+            .putLong(K_CHECK, System.currentTimeMillis())
+            .putBoolean(K_OK, ok)
+            .putString(K_MSG, msg.take(120))
+            .apply()
+    }
+
+    fun lastCheck(c: Context): Long = sp(c).getLong(K_CHECK, 0L)
+
+    fun lastOk(c: Context): Boolean = sp(c).getBoolean(K_OK, false)
+
+    fun lastMsg(c: Context): String = sp(c).getString(K_MSG, "") ?: ""
+
+    /** 最近一次补点补上的点数（-1 表示今天还没试过） */
+    fun filled(c: Context): Int = sp(c).getInt(K_FILL, -1)
+
+    fun setFilled(c: Context, n: Int) {
+        sp(c).edit().putInt(K_FILL, n).putLong(K_FILL_TS, System.currentTimeMillis()).apply()
+    }
+
+    /** 补点限流：20 分钟内不重复请求 */
+    fun fillDue(c: Context): Boolean =
+        System.currentTimeMillis() - sp(c).getLong(K_FILL_TS, 0L) > 20 * 60_000L
 }

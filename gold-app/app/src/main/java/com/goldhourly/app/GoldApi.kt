@@ -1,9 +1,13 @@
 package com.goldhourly.app
 
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 /**
  * 取价：多个源依次尝试。lastError 记录失败的真实原因，界面会显示出来便于定位。
@@ -115,5 +119,76 @@ object GoldApi {
             }
         }
         return 0.0
+    }
+
+    /**
+     * 今日逐小时收盘价（美元/盎司），用于补齐 App 未运行时的整点。
+     * 源：新浪外盘期货分时K线（中国境内可访问）。失败返回空表，原因写 lastError。
+     */
+    fun hourlyHistory(): Map<Int, Double> {
+        val errs = ArrayList<String>()
+        val urls = listOf(
+            "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/GlobalFuturesService.getGlobalFuturesMiniKLine60m?symbol=XAU",
+            "https://stock2.finance.sina.com.cn/futures/api/jsonp.php/var%20t=/GlobalFuturesService.getGlobalFuturesMiniKLine5m?symbol=XAU"
+        )
+        for (u in urls) {
+            val body = get(u, "https://finance.sina.com.cn")
+            if (body.isNullOrBlank()) {
+                errs.add("hist " + lastError)
+                continue
+            }
+            val a = body.indexOf('[')
+            val b = body.lastIndexOf(']')
+            if (a < 0 || b <= a) {
+                errs.add("hist 格式异常")
+                continue
+            }
+            try {
+                val arr = JSONArray(body.substring(a, b + 1))
+                val fmt = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US)
+                val bars = ArrayList<Pair<Long, Double>>()
+                for (i in 0 until arr.length()) {
+                    val o = arr.optJSONObject(i) ?: continue
+                    val d = o.optString("d", "")
+                    if (d.length < 19) continue
+                    val t = try {
+                        fmt.parse(d)?.time ?: 0L
+                    } catch (_: Exception) {
+                        0L
+                    }
+                    if (t <= 0L) continue
+                    val c = o.optString("c", "").toDoubleOrNull() ?: o.optDouble("c", 0.0)
+                    if (c > 100.0) bars.add(t to c)
+                }
+                if (bars.size < 2) {
+                    errs.add("hist 无数据")
+                    continue
+                }
+                // 若时间戳整体超前（服务器按 UTC 标注），整体回退 8 小时
+                var shift = 0L
+                if (bars.maxOf { it.first } > System.currentTimeMillis() + 3_600_000L) {
+                    shift = -8 * 3_600_000L
+                }
+                val dayFmt = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                val hourFmt = SimpleDateFormat("HH", Locale.US)
+                val today = dayFmt.format(Date())
+                val map = HashMap<Int, Double>()
+                for ((t0, v) in bars) {
+                    val dt = Date(t0 + shift)
+                    if (dayFmt.format(dt) != today) continue
+                    val h = hourFmt.format(dt).toIntOrNull() ?: continue
+                    map[h] = v
+                }
+                if (map.isNotEmpty()) {
+                    lastError = ""
+                    return map
+                }
+                errs.add("hist 今日无点")
+            } catch (_: Exception) {
+                errs.add("hist 解析失败")
+            }
+        }
+        lastError = if (errs.isEmpty()) "hist 不可用" else errs.joinToString(" | ").take(140)
+        return emptyMap()
     }
 }

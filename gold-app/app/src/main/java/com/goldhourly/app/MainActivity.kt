@@ -45,6 +45,7 @@ class MainActivity : Activity() {
     private lateinit var btnSave: Button
     private lateinit var btnRefresh: Button
     private lateinit var btnBattery: Button
+    private lateinit var tvBg: TextView
 
     private val handler = Handler(Looper.getMainLooper())
     private var busy = false
@@ -64,6 +65,7 @@ class MainActivity : Activity() {
         setContentView(buildUi())
         Notifier.ensureChannel(this)
         HourlyAlarm.schedule(this)
+        MonitorService.start(this)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -77,7 +79,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         render()
-        if (!hasPointForNow()) refresh()
+        if (!hasPointForNow() || (needsFill() && PriceStore.fillDue(this))) refresh()
     }
 
     override fun onStart() {
@@ -139,6 +141,9 @@ class MainActivity : Activity() {
         tvState = text("未设置底价", 12f, DIM)
         root.addView(tvState, lp(6))
 
+        tvBg = text("", 12f, DIM)
+        root.addView(tvBg, lp(6))
+
         val foot = LinearLayout(this)
         foot.orientation = LinearLayout.HORIZONTAL
         foot.gravity = Gravity.CENTER_VERTICAL
@@ -190,19 +195,30 @@ class MainActivity : Activity() {
         return PriceStore.hours(this).any { it.first == hour }
     }
 
+    /** 今天是否缺了当前时刻之前的整点 */
+    private fun needsFill(): Boolean {
+        val nowHour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
+        val have = PriceStore.hours(this).map { it.first }.toSet()
+        for (h in 0 until nowHour) if (!have.contains(h)) return true
+        return false
+    }
+
     private fun refresh() {
         if (busy) return
         busy = true
+        val fill = needsFill() && PriceStore.fillDue(this)
         Thread {
             val ok = try {
-                Sync.run(this)
+                Sync.run(this, fill)
             } catch (_: Exception) {
                 false
             }
+            val added = PriceStore.filled(this)
             handler.post {
                 busy = false
                 lastErr = !ok
                 render()
+                if (fill && added > 0) toast("已补齐 " + added + " 个整点")
             }
         }.start()
     }
@@ -221,7 +237,35 @@ class MainActivity : Activity() {
         } else {
             "未设置底价（不会提醒）"
         }
-        btnBattery.text = if (HourlyAlarm.ignoringBattery(this)) "后台已开" else "允许后台"
+        btnBattery.text = when {
+            !HourlyAlarm.ignoringBattery(this) -> "允许后台"
+            !HourlyAlarm.canExact(this) -> "允许精确闹钟"
+            else -> "后台已开"
+        }
+
+        val bg = StringBuilder()
+        val lc = PriceStore.lastCheck(this)
+        if (lc <= 0L) {
+            bg.append("后台：等待首次检查")
+        } else {
+            val c2 = Calendar.getInstance()
+            c2.timeInMillis = lc
+            bg.append(
+                String.format(
+                    Locale.US, "上次检查 %02d:%02d ",
+                    c2.get(Calendar.HOUR_OF_DAY), c2.get(Calendar.MINUTE)
+                )
+            )
+            bg.append(if (PriceStore.lastOk(this)) "成功" else "失败")
+            if (!PriceStore.lastOk(this)) {
+                val e = PriceStore.lastMsg(this)
+                if (e.isNotBlank()) bg.append("（").append(e.take(40)).append("）")
+            }
+        }
+        val add = PriceStore.filled(this)
+        if (add > 0) bg.append(" · 补 ").append(add).append(" 点")
+        if (!HourlyAlarm.canExact(this)) bg.append(" · 精确闹钟未开")
+        tvBg.text = bg.toString()
 
         if (points.isEmpty()) {
             tvPrice.text = "--"
@@ -286,24 +330,39 @@ class MainActivity : Activity() {
     }
 
     private fun askBattery() {
-        if (HourlyAlarm.ignoringBattery(this)) {
-            toast("后台运行已允许")
+        if (!HourlyAlarm.ignoringBattery(this)) {
+            try {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                        Uri.parse("package:" + packageName)
+                    )
+                )
+            } catch (_: Exception) {
+                try {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                } catch (_: Exception) {
+                    toast("请在系统设置中允许本应用后台运行")
+                }
+            }
             return
         }
-        try {
-            startActivity(
-                Intent(
-                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                    Uri.parse("package:" + packageName)
-                )
-            )
-        } catch (_: Exception) {
-            try {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            } catch (_: Exception) {
-                toast("请在系统设置中允许本应用后台运行")
+        if (!HourlyAlarm.canExact(this)) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                try {
+                    startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                            Uri.parse("package:" + packageName)
+                        )
+                    )
+                } catch (_: Exception) {
+                    toast("请在系统设置里允许「闹钟和提醒」")
+                }
             }
+            return
         }
+        toast("后台与精确闹钟均已允许")
     }
 
     private fun toast(s: String) {
